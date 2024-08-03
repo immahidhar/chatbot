@@ -1,67 +1,57 @@
-import random
 import json
-import pickle
-import numpy as np
-import tensorflow as tf
-
 import nltk
+import pickle
+import random
+import numpy as np
 from nltk.stem import WordNetLemmatizer
 
-lemmatizer = WordNetLemmatizer()
+from tensorflow.keras.models import load_model
 
+lemmatizer = WordNetLemmatizer()
 intents = json.loads(open('intents.json').read())
 
-words = []
-classes = []
-documents = []
-ignoreLetters = ['?', '!', '.', ',']
+words = pickle.load(open('words.pkl', 'rb'))
+classes = pickle.load(open('classes.pkl', 'rb'))
+model = load_model('chatbot_model.h5')
 
-for intent in intents['intents']:
-    for pattern in intent['patterns']:
-        wordList = nltk.word_tokenize(pattern)
-        words.extend(wordList)
-        documents.append((wordList, intent['tag']))
-        if intent['tag'] not in classes:
-            classes.append(intent['tag'])
+def clean_up_sentence(sentence):
+    return [lemmatizer.lemmatize(word) for word in nltk.word_tokenize(sentence)]
 
-words = [lemmatizer.lemmatize(word) for word in words if word not in ignoreLetters]
-words = sorted(set(words))
+def bag_of_words(sentence):
+    s_words = clean_up_sentence(sentence)
+    bag = [0] * len(words)
+    for w in s_words:
+        for i, word in enumerate(words):
+            if word == w: bag[i] = 1
+    return np.array(bag)
 
-classes = sorted(set(classes))
+def predict_class(sentence):
+    bow = bag_of_words(sentence)
+    res = model.predict(np.array([bow]))[0]
+    ERROR_THRESHOLD = 0.25
+    result = [ [i,r] for i,r in enumerate(res) if r > ERROR_THRESHOLD ]
+    result.sort(key=lambda x: x[1], reverse=True)
+    return_list = []
+    for r in result:
+        return_list.append({
+            "intent": classes[r[0]],
+            "probability": str(r[1])
+        })
+    return return_list
 
-pickle.dump(words, open('words.pkl', 'wb'))
-pickle.dump(classes, open('classes.pkl', 'wb'))
+def get_response(intents_list, intents_json):
+    tag = intents_list[0]['intent']
+    list_of_intents = intents_json['intents']
+    for i in list_of_intents:
+        if i['tag'] == tag:
+            result = random.choice(i['responses'])
+            break
+    return result
 
-training = []
-outputEmpty = [0] * len(classes)
+print("Chat Bot ready!")
 
-for document in documents:
-    bag = []
-    wordPatterns = document[0]
-    wordPatterns = [lemmatizer.lemmatize(word.lower()) for word in wordPatterns]
-    for word in words:
-        bag.append(1) if word in wordPatterns else bag.append(0)
-
-    outputRow = list(outputEmpty)
-    outputRow[classes.index(document[1])] = 1
-    training.append(bag + outputRow)
-
-random.shuffle(training)
-training = np.array(training)
-
-trainX = training[:, :len(words)]
-trainY = training[:, len(words):]
-
-model = tf.keras.Sequential()
-model.add(tf.keras.layers.Dense(128, input_shape=(len(trainX[0]),), activation = 'relu'))
-model.add(tf.keras.layers.Dropout(0.5))
-model.add(tf.keras.layers.Dense(64, activation = 'relu'))
-model.add(tf.keras.layers.Dropout(0.5))
-model.add(tf.keras.layers.Dense(len(trainY[0]), activation='softmax'))
-
-sgd = tf.keras.optimizers.SGD(learning_rate=0.01, momentum=0.9, nesterov=True)
-model.compile(loss='categorical_crossentropy', optimizer=sgd, metrics=['accuracy'])
-
-model.fit(trainX, trainY, epochs=200, batch_size=5, verbose=1)
-model.save('chatbot_model.h5')
-print('Done')
+while True:
+    message = input("you > ")
+    ints = predict_class(message)
+    res = get_response(ints, intents)
+    print(f'bot > {res}')
